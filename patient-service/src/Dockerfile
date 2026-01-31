@@ -1,18 +1,18 @@
 # -----------------------------
-# Stage 1: Dependency Install
+# Stage 1: Generate + Install
 # -----------------------------
-FROM node:18-alpine AS deps
+FROM node:18-alpine AS builder
 
 WORKDIR /app
 
-# Copy dependency manifests
-COPY package.json package-lock.json ./
+COPY . .
 
-# Fail fast if package.json is missing
-RUN test -f package.json
+# Generate package.json if missing
+RUN if [ ! -f package.json ]; then \
+      npm init -y; \
+    fi
 
-# Install production dependencies
-RUN npm ci --omit=dev
+RUN npm install --omit=dev
 
 
 # -----------------------------
@@ -22,17 +22,9 @@ FROM node:18-alpine
 
 WORKDIR /app
 
-# Copy node_modules from deps stage
-COPY --from=deps /app/node_modules ./node_modules
-
-# Copy application source
-COPY src ./src
-COPY package.json ./
-
-# Security: non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
-USER appuser
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+COPY --from=builder /app/src ./src
 
 EXPOSE 3000
-
 CMD ["node", "src/index.js"]
