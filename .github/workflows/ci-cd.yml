@@ -22,11 +22,11 @@ jobs:
       matrix:
         service:
           - name: application-service
-            context: ./application-service
+            context: ./application-service/src
           - name: order-service
             context: ./order-service
           - name: patient-service
-            context: ./patient-service
+            context: ./patient-service/src
 
     steps:
     ########################################
