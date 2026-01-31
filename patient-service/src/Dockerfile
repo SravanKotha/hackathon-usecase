@@ -1,11 +1,19 @@
 FROM node:18-alpine
 
+# Create app directory
 WORKDIR /app
+
+# Copy only dependency manifests first (better cache utilization)
 COPY package*.json ./
-RUN npm install 
+
+# Install only production dependencies
+RUN npm install --omit=dev
+
+# Copy application source code
 COPY . .
 
-#RUN if [ -f package.json ]; then npm install; fi
-
+# Expose patient service port
 EXPOSE 3000
+
+# Start the service
 CMD ["node", "src/index.js"]
