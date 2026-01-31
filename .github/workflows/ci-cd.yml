@@ -1,147 +1,100 @@
-name: Microservices CI-CD Pipeline
+name: Build & Push Microservices Images
 
 on:
   push:
-    branches: [ "main" ]
+    branches:
+      - main
+
+# Cancel older runs if a new commit comes
+concurrency:
+  group: build-main
+  cancel-in-progress: true
 
 env:
-  PROJECT_ID: hcl-hackathon-1234
   REGION: us-central1
-  GAR_REPO: hackathon-repo
-  GKE_CLUSTER: hackathon-autopilot-cluster
-  GKE_ZONE: us-central1-a
+  PROJECT_ID: hcl-hackathon-1234
+  REPOSITORY: hackathon-repo
 
 jobs:
-  ############################
-  # 1️⃣ BUILD STAGE
-  ############################
   build:
-    name: Build & Push Images
     runs-on: ubuntu-latest
 
-    permissions:
-      contents: read
-      id-token: write
+    strategy:
+      matrix:
+        service:
+          - name: application-service
+            context: ./application-service
+          - name: order-service
+            context: ./order-service
+          - name: patient-service
+            context: ./patient-service
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    ########################################
+    # Checkout source
+    ########################################
+    - name: Checkout
+      uses: actions/checkout@v4
 
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-actions-sa@my-gcp-project-id.iam.gserviceaccount.com
+    ########################################
+    # Install gcloud (runner usually has it,
+    # but this keeps things reliable)
+    ########################################
+    - name: Setup gcloud
+      uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker for GAR
-        run: |
-          gcloud auth configure-docker ${REGION}-docker.pkg.dev --quiet
+    ########################################
+    # Create service account JSON file
+    ########################################
+    - name: Create GCP key file
+      run: |
+        echo '${{ secrets.GCP_GAR }}' > "${{ github.workspace }}/gcp-key.json"
 
-      - name: Build & Run Containers (Docker Compose)
-        run: |
-          docker compose up -d --build
+    ########################################
+    # Authenticate using service account key
+    ########################################
+    - name: Authenticate gcloud
+      run: |
+        gcloud auth activate-service-account --key-file=gcp-key.json
+        gcloud config set project $PROJECT_ID
 
-      - name: Tag & Push Images to GAR
-        run: |
-          docker tag patient-service:latest \
-            ${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${PATIENT_IMAGE}:${{ github.sha }}
+    ########################################
+    # Configure Docker for Artifact Registry
+    ########################################
+    - name: Configure Docker auth
+      run: |
+        gcloud auth configure-docker $REGION-docker.pkg.dev --quiet
 
-          docker tag appointment-service:latest \
-            ${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${APPOINTMENT_IMAGE}:${{ github.sha }}
+    ########################################
+    # Generate single immutable version tag
+    ########################################
+    - name: Generate version tag
+      id: version
+      run: |
+        SHORT_SHA=$(git rev-parse --short=7 HEAD)
+        echo "tag=v1.0.$SHORT_SHA" >> $GITHUB_OUTPUT
 
-          docker tag order-service:latest \
-            ${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${ORDER_IMAGE}:${{ github.sha }}
+    ########################################
+    # Build & Push each microservice
+    ########################################
+    - name: Build & Push ${{ matrix.service.name }}
+      run: |
+        IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/$REPOSITORY/${{ matrix.service.name }}:${{ steps.version.outputs.tag }}
 
-          docker push ${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${PATIENT_IMAGE}:${{ github.sha }}
-          docker push ${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${APPOINTMENT_IMAGE}:${{ github.sha }}
-          docker push ${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${ORDER_IMAGE}:${{ github.sha }}
+        echo "🚀 Building $IMAGE"
+        docker build -t $IMAGE ${{ matrix.service.context }}
 
-  ############################
-  # 2️⃣ TERRAFORM STAGE
-  ############################
-  terraform:
-    name: Terraform Provisioning
-    runs-on: ubuntu-latest
-    needs: build
+        echo "📦 Pushing $IMAGE"
+        docker push $IMAGE
 
-    permissions:
-      contents: read
-      id-token: write
+    ########################################
+    # Cleanup key file (security best practice)
+    ########################################
+    - name: Cleanup key file
+      run: rm -f gcp-key.json
 
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-actions-sa@my-gcp-project-id.iam.gserviceaccount.com
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: 1.6.6
-
-      - name: Terraform Init
-        working-directory: terraform
-        run: terraform init
-
-      - name: Terraform Format
-        working-directory: terraform
-        run: terraform fmt -check
-
-      - name: Terraform Validate
-        working-directory: terraform
-        run: terraform validate
-
-      - name: Terraform Plan
-        working-directory: terraform
-        run: terraform plan
-
-      - name: Terraform Apply
-        working-directory: terraform
-        run: terraform apply -auto-approve
-
-  ############################
-  # 3️⃣ DEPLOY STAGE
-  ############################
-  deploy:
-    name: Deploy to GKE
-    runs-on: ubuntu-latest
-    needs: terraform
-
-    permissions:
-      contents: read
-      id-token: write
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Authenticate to GCP
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: projects/123456789/locations/global/workloadIdentityPools/github-pool/providers/github-provider
-          service_account: github-actions-sa@my-gcp-project-id.iam.gserviceaccount.com
-
-      - name: Get GKE Credentials
-        uses: google-github-actions/get-gke-credentials@v2
-        with:
-          cluster_name: ${{ env.GKE_CLUSTER }}
-          location: ${{ env.GKE_ZONE }}
-
-      - name: Deploy Images to GKE
-        run: |
-          kubectl set image deployment/patient-service \
-            patient-service=${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${PATIENT_IMAGE}:${{ github.sha }}
-
-          kubectl set image deployment/appointment-service \
-            appointment-service=${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${APPOINTMENT_IMAGE}:${{ github.sha }}
-
-          kubectl set image deployment/order-service \
-            order-service=${REGION}-docker.pkg.dev/${PROJECT_ID}/${GAR_REPO}/${ORDER_IMAGE}:${{ github.sha }}
-
-          kubectl rollout status deployment/patient-service
-          kubectl rollout status deployment/appointment-service
-          kubectl rollout status deployment/order-service
+    ########################################
+    # Done message
+    ########################################
+    - name: Done
+      run: echo "✅ All services pushed with tag ${{ steps.version.outputs.tag }}"
