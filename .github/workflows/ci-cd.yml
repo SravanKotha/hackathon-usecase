@@ -1,5 +1,4 @@
 name: Build & Push Microservices Images
-
 on:
   push:
     branches:
